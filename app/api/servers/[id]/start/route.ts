@@ -5,8 +5,12 @@ import { verifyToken } from '@/lib/auth/jwt';
 import { getServerManager } from '@/lib/minecraft/server-manager';
 import { getDatabase } from '@/lib/db/db';
 import { getActivityLogger } from '@/lib/activity/logger';
+import { createSSHManager } from '@/lib/vps/ssh';
+import { createMinecraftController } from '@/lib/minecraft/controller';
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+  let sshManager: any = null;
+  
   try {
     const token = req.headers.get('authorization')?.replace('Bearer ', '');
     
@@ -44,36 +48,67 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     }
     
     const serverManager = getServerManager();
-    
-    // Update status to starting
-    await serverManager.updateServerStatus(params.id, 'starting');
-    
-    // Simulate server start (in production, this would SSH to VPS)
     const logger = getActivityLogger();
     
+    // Check if VPS is configured
+    if (!process.env.VPS_HOST) {
+      await logger.log(payload.user_id, 'Server start attempted without VPS configured', 'failed', params.id, 'VPS not configured');
+      return NextResponse.json(
+        { success: false, error: 'VPS not configured - set VPS_HOST environment variable' },
+        { status: 503 }
+      );
+    }
+
+    // Update status to starting
+    await serverManager.updateServerStatus(params.id, 'starting');
+
     try {
-      // TODO: Implement actual server start via SSH
-      await serverManager.updateServerStatus(params.id, 'online');
-      await logger.log(payload.user_id, 'Server started', 'success', params.id);
+      // Connect to VPS and start server
+      sshManager = await createSSHManager();
+      const controller = await createMinecraftController(sshManager);
       
-      return NextResponse.json({
-        success: true,
-        message: 'Server started successfully',
-      });
+      const result = await controller.startServer(server);
+      
+      if (result.success) {
+        await serverManager.updateServerStatus(params.id, 'online');
+        await logger.log(payload.user_id, 'Server started', 'success', params.id);
+        
+        return NextResponse.json({
+          success: true,
+          message: 'Server started successfully',
+          data: { pid: result.pid },
+        });
+      } else {
+        await serverManager.updateServerStatus(params.id, 'offline');
+        await logger.log(payload.user_id, 'Server start failed', 'failed', params.id, result.error);
+        
+        return NextResponse.json(
+          { success: false, error: result.error || 'Failed to start server' },
+          { status: 500 }
+        );
+      }
     } catch (error) {
-      await serverManager.updateServerStatus(params.id, 'crashed');
-      await logger.log(payload.user_id, 'Server start failed', 'failed', params.id, String(error));
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      console.error('[API] Start server error:', errorMsg);
+      
+      await serverManager.updateServerStatus(params.id, 'offline');
+      await logger.log(payload.user_id, 'Server start failed', 'failed', params.id, errorMsg);
       
       return NextResponse.json(
-        { success: false, error: 'Failed to start server' },
+        { success: false, error: `Server start failed: ${errorMsg}` },
         { status: 500 }
       );
     }
   } catch (error) {
-    console.error('Start server error:', error);
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error('[API] Start server error:', errorMsg);
     return NextResponse.json(
       { success: false, error: 'Failed to start server' },
       { status: 500 }
     );
+  } finally {
+    if (sshManager) {
+      sshManager.disconnect();
+    }
   }
 }

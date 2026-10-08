@@ -2,7 +2,6 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken } from '@/lib/auth/jwt';
-import { getServerManager } from '@/lib/minecraft/server-manager';
 import { getDatabase } from '@/lib/db/db';
 import { getActivityLogger } from '@/lib/activity/logger';
 import { createSSHManager } from '@/lib/vps/ssh';
@@ -47,12 +46,11 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       );
     }
     
-    const serverManager = getServerManager();
     const logger = getActivityLogger();
     
     // Check if VPS is configured
     if (!process.env.VPS_HOST) {
-      await logger.log(payload.user_id, 'Server stop attempted without VPS configured', 'failed', params.id, 'VPS not configured');
+      await logger.log(payload.user_id, 'Server restart attempted without VPS configured', 'failed', params.id, 'VPS not configured');
       return NextResponse.json(
         { success: false, error: 'VPS not configured' },
         { status: 503 }
@@ -60,44 +58,43 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     }
 
     try {
-      // Connect to VPS and stop server
+      // Connect to VPS and restart server
       sshManager = await createSSHManager();
       const controller = await createMinecraftController(sshManager);
       
-      const result = await controller.stopServer(server);
+      const result = await controller.restartServer(server);
       
       if (result.success) {
-        await serverManager.updateServerStatus(params.id, 'offline');
-        await logger.log(payload.user_id, 'Server stopped', 'success', params.id);
+        await logger.log(payload.user_id, 'Server restarted', 'success', params.id);
         
         return NextResponse.json({
           success: true,
-          message: 'Server stopped successfully',
+          message: 'Server restarted successfully',
         });
       } else {
-        await logger.log(payload.user_id, 'Server stop failed', 'failed', params.id, result.error);
+        await logger.log(payload.user_id, 'Server restart failed', 'failed', params.id, result.error);
         
         return NextResponse.json(
-          { success: false, error: result.error || 'Failed to stop server' },
+          { success: false, error: result.error || 'Failed to restart server' },
           { status: 500 }
         );
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
-      console.error('[API] Stop server error:', errorMsg);
+      console.error('[API] Restart server error:', errorMsg);
       
-      await logger.log(payload.user_id, 'Server stop failed', 'failed', params.id, errorMsg);
+      await logger.log(payload.user_id, 'Server restart failed', 'failed', params.id, errorMsg);
       
       return NextResponse.json(
-        { success: false, error: `Server stop failed: ${errorMsg}` },
+        { success: false, error: `Server restart failed: ${errorMsg}` },
         { status: 500 }
       );
     }
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    console.error('[API] Stop server error:', errorMsg);
+    console.error('[API] Restart server error:', errorMsg);
     return NextResponse.json(
-      { success: false, error: 'Failed to stop server' },
+      { success: false, error: 'Failed to restart server' },
       { status: 500 }
     );
   } finally {

@@ -2,13 +2,12 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken } from '@/lib/auth/jwt';
-import { getServerManager } from '@/lib/minecraft/server-manager';
 import { getDatabase } from '@/lib/db/db';
 import { getActivityLogger } from '@/lib/activity/logger';
 import { createSSHManager } from '@/lib/vps/ssh';
 import { createMinecraftController } from '@/lib/minecraft/controller';
 
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   let sshManager: any = null;
   
   try {
@@ -47,57 +46,45 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       );
     }
     
-    const serverManager = getServerManager();
-    const logger = getActivityLogger();
-    
     // Check if VPS is configured
     if (!process.env.VPS_HOST) {
-      await logger.log(payload.user_id, 'Server stop attempted without VPS configured', 'failed', params.id, 'VPS not configured');
-      return NextResponse.json(
-        { success: false, error: 'VPS not configured' },
-        { status: 503 }
-      );
+      return NextResponse.json({
+        success: true,
+        data: {
+          running: false,
+          reason: 'VPS not configured',
+        },
+      });
     }
 
     try {
-      // Connect to VPS and stop server
+      // Connect to VPS and check status
       sshManager = await createSSHManager();
       const controller = await createMinecraftController(sshManager);
       
-      const result = await controller.stopServer(server);
+      const processInfo = await controller.isServerRunning(server);
       
-      if (result.success) {
-        await serverManager.updateServerStatus(params.id, 'offline');
-        await logger.log(payload.user_id, 'Server stopped', 'success', params.id);
-        
-        return NextResponse.json({
-          success: true,
-          message: 'Server stopped successfully',
-        });
-      } else {
-        await logger.log(payload.user_id, 'Server stop failed', 'failed', params.id, result.error);
-        
-        return NextResponse.json(
-          { success: false, error: result.error || 'Failed to stop server' },
-          { status: 500 }
-        );
-      }
+      return NextResponse.json({
+        success: true,
+        data: processInfo,
+      });
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
-      console.error('[API] Stop server error:', errorMsg);
+      console.error('[API] Status check error:', errorMsg);
       
-      await logger.log(payload.user_id, 'Server stop failed', 'failed', params.id, errorMsg);
-      
-      return NextResponse.json(
-        { success: false, error: `Server stop failed: ${errorMsg}` },
-        { status: 500 }
-      );
+      return NextResponse.json({
+        success: true,
+        data: {
+          running: false,
+          reason: `Status check failed: ${errorMsg}`,
+        },
+      });
     }
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    console.error('[API] Stop server error:', errorMsg);
+    console.error('[API] Status check error:', errorMsg);
     return NextResponse.json(
-      { success: false, error: 'Failed to stop server' },
+      { success: false, error: 'Failed to check status' },
       { status: 500 }
     );
   } finally {
