@@ -1,0 +1,79 @@
+'use server';
+
+import { NextRequest, NextResponse } from 'next/server';
+import { verifyToken } from '@/lib/auth/jwt';
+import { getServerManager } from '@/lib/minecraft/server-manager';
+import { getDatabase } from '@/lib/db/db';
+import { getActivityLogger } from '@/lib/activity/logger';
+
+export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+  try {
+    const token = req.headers.get('authorization')?.replace('Bearer ', '');
+    
+    if (!token) {
+      return NextResponse.json(
+        { success: false, error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+    
+    const payload = verifyToken(token);
+    if (!payload) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid token' },
+        { status: 401 }
+      );
+    }
+    
+    const db = getDatabase();
+    const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(params.id) as any;
+    
+    if (!server) {
+      return NextResponse.json(
+        { success: false, error: 'Server not found' },
+        { status: 404 }
+      );
+    }
+    
+    // Check authorization
+    if (server.user_id !== payload.user_id && payload.role !== 'admin') {
+      return NextResponse.json(
+        { success: false, error: 'Forbidden' },
+        { status: 403 }
+      );
+    }
+    
+    const serverManager = getServerManager();
+    
+    // Update status to starting
+    await serverManager.updateServerStatus(params.id, 'starting');
+    
+    // Simulate server start (in production, this would SSH to VPS)
+    const logger = getActivityLogger();
+    
+    try {
+      // TODO: Implement actual server start via SSH
+      await serverManager.updateServerStatus(params.id, 'online');
+      await logger.log(payload.user_id, 'Server started', 'success', params.id);
+      
+      return NextResponse.json({
+        success: true,
+        message: 'Server started successfully',
+      });
+    } catch (error) {
+      await serverManager.updateServerStatus(params.id, 'crashed');
+      await logger.log(payload.user_id, 'Server start failed', 'failed', params.id, String(error));
+      
+      return NextResponse.json(
+        { success: false, error: 'Failed to start server' },
+        { status: 500 }
+      );
+    }
+  } catch (error) {
+    console.error('Start server error:', error);
+    return NextResponse.json(
+      { success: false, error: 'Failed to start server' },
+      { status: 500 }
+    );
+  }
+}
